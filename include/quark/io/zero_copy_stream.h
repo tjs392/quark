@@ -194,10 +194,10 @@ public:
     int64_t ByteCount() const override { return pos_; }
 
 private:
-    const uint8_t* data_;   ///< Pointer to the start of the buffer
-    int size_;              ///< Total size of the buffer
-    int pos_;               ///< Current read position in the buffer
-    int last_returned_;     ///< Size of the last block returned by Next()
+    const uint8_t* data_;   // Pointer to the start of the buffer
+    int size_;              // Total size of the buffer
+    int pos_;               // Current read position in the buffer
+    int last_returned_;     // Size of the last block returned by Next()
 };
 
 /// MultiBufferInputStream provides zero-copy access to multiple contiguous
@@ -217,8 +217,8 @@ class MultiBufferInputStream : public ZeroCopyInputStream {
 public:
     /// Represents a single contiguous chunk of memory
     struct Chunk {
-        const uint8_t* data;    ///< pointer to the chunk memory
-        int size;               ///< size of the chunk in bytes
+        const uint8_t* data;    // pointer to the chunk memory
+        int size;               // size of the chunk in bytes
     };
 
     /// Constructs the stream from a vector of chunks
@@ -269,11 +269,11 @@ public:
     int64_t ByteCount() const override { return total_; }
 
 private:
-    std::vector<Chunk> chunks_; ///< underlying memory chunks
-    int idx_;                   ///< index of next chunk to serve
-    int backed_up_ = 0;         ///< number of bytes backed up from last chunk
-    int last_size_ = 0;         ///< size of last chunk returned
-    int64_t total_;             ///< total bytes returned so far
+    std::vector<Chunk> chunks_; // underlying memory chunks
+    int idx_;                   // index of next chunk to serve
+    int backed_up_ = 0;         // number of bytes backed up from last chunk
+    int last_size_ = 0;         // size of last chunk returned
+    int64_t total_;             // total bytes returned so far
 };
 
 // TODO: Implement MmapInputStream usage and tests
@@ -363,41 +363,268 @@ public:
     }
 
     private:
-    uint8_t* data_;         ///< Pointer to the start of the buffer.
-    int size_;              ///< Total size of the buffer in bytes.
-    int pos_;               ///< Current write position in the buffer.
-    int last_provided_;     ///< Size of the last block returned by Next().
-    int64_t total_;         ///< Total bytes written so far.
+    uint8_t* data_;         // Pointer to the start of the buffer.
+    int size_;              // Total size of the buffer in bytes.
+    int pos_;               // Current write position in the buffer.
+    int last_provided_;     // Size of the last block returned by Next().
+    int64_t total_;         // Total bytes written so far.
 };
 
+/**
+ * @class VectorOutputStream
+ * @brief A ZeroCopyOutputStream implementation backed by std::vector<uint8_t>.
+ *
+ * Provides zero-copy semantics: callers can write directly into the vector's
+ * underlying memory without intermediate buffers or extra copies. This makes it
+ * useful for serialization frameworks that expect ZeroCopyOutputStream.
+ */
 class VectorOutputStream : ZeroCopyOutputStream {
 public:
-    explicit VectorOutputStream(size_t chunk_hint = 8192)
-        :   chunk_hint_(static_cast<int>(std::max<size_t>(64, chunk_hint))), 
+    /**
+     * @brief Construct a new VectorOutputStream.
+     * 
+     * @param block_size Size of each memory block handed out by Next().
+     *                   Default is 8192 bytes, minimum enforced is 64.
+     */
+    explicit VectorOutputStream(size_t block_size = 8192)
+        :   block_size_(static_cast<int>(std::max<size_t>(64, block_size))), 
             size_(0), 
             last_provided_(0) {
-        buf_.reserve(chunk_hint_);
+        buf_.reserve(block_size_);
     }
 
+    /**
+     * @brief Provide the caller with a fresh writable block of memory.
+     * 
+     * @param block Pointer to the start of the writable memory (output).
+     * @param size  Size of the writable block in bytes (output).
+     * @return true if a block was successfully allocated.
+     */
     bool Next(uint8_t** block, int* size) override {
-        if (static_cast<int>(buf_.capacity() - buf_.size()) < chunk_hint_) {
-            buf_.reserve(buf_.capacity() + static_cast<size_t>(chunk_hint_));
+        if (static_cast<int>(buf_.capacity() - buf_.size()) < block_size_) {
+            buf_.reserve(buf_.capacity() + static_cast<size_t>(block_size_));
         }
 
-        size_t grow = static_cast<size_t>(chunk_hint_)
+        size_t grow = static_cast<size_t>(block_size_);
+        buf_.resize(buf_.size() + grow);
+        *block = buf_.data() + size_;
+        *size = block_size_;
+        last_provided_ = block_size_;
+        total_ += block_size_;
+        return true;
     }
 
+    /**
+     * @brief Return unused bytes from the most recent Next() call.
+     *
+     * @param count Number of bytes to back up (must be between 0 and last_provided_).
+     * @throws std::runtime_error if count is out of range.
+     */
+    void BackUp(int count) override {
+        if (count < 0 || count > last_provided_) throw std::runtime_error("BackUp out of range");
+        size_ -= count;
+        total_ -= count;
+        last_provided_ -= count;
+        buf_.resize(size_);
+    }
+
+    /**
+     * @brief Flush the stream.
+     * 
+     * For VectorOutputStream, this is a no-op since data is already in memory.
+     * @return Always returns true.
+     */
+    bool Flush() override { 
+        return true; 
+    }
+
+    /**
+     * @brief Get the total number of bytes written so far.
+     * 
+     * @return int64_t Total number of bytes.
+     */
+    int64_t ByteCount() const override {
+        return size_;
+    }
+
+    /**
+     * @brief Access the underlying buffer (read-only).
+     * 
+     * @return const std::vector<uint8_t>& Reference to the buffer.
+     */
+    const std::vector<uint8_t>& buffer() const { return buf_; }
+
+    /**
+     * @brief Access the underlying buffer (mutable).
+     * 
+     * @return std::vector<uint8_t>& Reference to the buffer.
+     */
+    std::vector<uint8_t>& buffer() { return buf_; }
+
 private:
-    std::vector<uint8_t> buf_;
-    int chunk_hint_;
-    int size_;
-    int last_provided_;
-    int64_t total_ = 0;
+    std::vector<uint8_t> buf_;  // Underlying storage buffer
+    int block_size_;            // Preferred size of each allocated block
+    int size_;                  // Logical size of data written
+    int last_provided_;         // Bytes provided in last Next() call
+    int64_t total_ = 0;         // Total bytes ever provided
+};
+
+// ================================
+// Read and Write APIs for Zero Copy Streams
+// =====================================
+
+static constexpr int kMaxVarint32Bytes = 5;
+static constexpr int kMaxVarint64Bytes = 10;
+
+/**
+ * @brief Writes a 32-bit unsigned integer to a ZeroCopyOutputStream using varint encoding.
+ *
+ * Varint encoding is a variable-length encoding where:
+ * - Each byte uses 7 bits to store data.
+ * - The most significant bit (MSB) of each byte is a continuation flag:
+ *   - 1 → more bytes follow
+ *   - 0 → last byte of the varint
+ *
+ * This encoding is space-efficient for small numbers: values less than 128
+ * fit in a single byte.
+ *
+ * @param out Pointer to the ZeroCopyOutputStream where the varint will be written.
+ * @param varint The 32-bit unsigned integer to encode and write.
+ * @return true if the write to the output stream succeeded, false otherwise.
+ *
+ * @note The maximum number of bytes used for a 32-bit varint is kMaxVarint32Bytes (5 bytes).
+ */
+inline bool WriteVarint32(ZeroCopyOutputStream* out, uint32_t varint) {
+    uint8_t tmp[kMaxVarint32Bytes];
+    int n = 0;
+    while (varint >= 0x80) {
+        tmp[n++] = static_cast<uint8_t>(varint | 0x80);
+        varint >>= 7;
+    }
+    tmp[n++] = static_cast<uint8_t>(varint);
+    return out->WriteRaw(tmp, n);
+}
+
+/**
+ * @brief Writes a 64-bit unsigned integer to a ZeroCopyOutputStream using varint encoding.
+ *
+ * Varint encoding is a variable-length encoding where:
+ * - Each byte uses 7 bits to store data.
+ * - The most significant bit (MSB) of each byte is a continuation flag:
+ *   - 1 → more bytes follow
+ *   - 0 → last byte of the varint
+ *
+ * This encoding is space-efficient for small numbers: values less than 128
+ * fit in a single byte. Larger values may take multiple bytes, up to
+ * kMaxVarint64Bytes (10 bytes for a full 64-bit integer).
+ *
+ * @param out Pointer to the ZeroCopyOutputStream where the varint will be written.
+ * @param varint The 64-bit unsigned integer to encode and write.
+ * @return true if the write to the output stream succeeded, false otherwise.
+ *
+ * @note The maximum number of bytes used for a 64-bit varint is kMaxVarint64Bytes (10 bytes).
+ */
+inline bool WriteVarint64(ZeroCopyOutputStream* out, uint64_t varint) {
+    uint8_t tmp[kMaxVarint64Bytes];
+    int n = 0;
+    while (varint > 0x80) {
+        tmp[n++] = static_cast<uint8_t>(varint | 0x80);
+        varint >>= 7;
+    }
+    tmp[n++] = static_cast<uint8_t>(varint);
+    return out->WriteRaw(tmp, n);
+}
+
+/**
+ * @brief Reads a 32-bit unsigned integer from a ZeroCopyInputStream using varint encoding.
+ *
+ * Varint encoding stores integers in a variable number of bytes. Each byte
+ * contributes 7 bits to the result, and the most significant bit is a
+ * continuation flag: 1 if more bytes follow, 0 if this is the last byte.
+ *
+ * This function reads directly from the current chunk provided by the stream,
+ * minimizing calls to Next() and BackUp(). It handles small and multi-byte
+ * varints efficiently.
+ *
+ * @param[in] in Pointer to a ZeroCopyInputStream to read from.
+ * @param[out] out_val Reference to a uint32_t where the decoded value will be stored.
+ *                     Will be set to 0 if reading fails.
+ * @return true if a varint was successfully read; false if the stream ended
+ *         before a complete varint could be read.
+ */
+inline bool ReadVarint32(ZeroCopyInputStream* in, uint32_t& out_val) {
+    out_val = 0;
+    int shift = 0;
+
+    const uint8_t* data;
+    int size;
+    const uint8_t* ptr = nullptr;
+
+    while (shift < 35) {
+        if (ptr == nullptr || ptr >= data + size) {
+            if (!in->Next(&data, &size)) return false;
+            if (size <= 0) continue;
+            ptr = data;
+        }
+
+        uint8_t byte = *ptr++;
+        out_val |= static_cast<uint32_t>(byte & 0x7F) << shift;
+        shift += 7;
+
+        if ((byte & 0x80) == 0) {
+            in->BackUp(static_cast<int>(data + size - ptr));
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
+ * @brief Reads a 64-bit unsigned integer from a ZeroCopyInputStream using varint encoding.
+ *
+ * Varint encoding stores integers in a variable number of bytes. Each byte
+ * contributes 7 bits to the result, and the most significant bit is a
+ * continuation flag: 1 if more bytes follow, 0 if this is the last byte.
+ *
+ * This function reads directly from the current chunk provided by the stream,
+ * minimizing calls to Next() and BackUp(). It efficiently handles both
+ * small and multi-byte varints, supporting full 64-bit integers.
+ *
+ * @param[in] in Pointer to a ZeroCopyInputStream to read from.
+ * @param[out] out_val Reference to a uint64_t where the decoded value will be stored.
+ *                     Will be set to 0 if reading fails.
+ * @return true if a varint was successfully read; false if the stream ended
+ *         before a complete varint could be read.
+ */
+inline bool ReadVarint64(ZeroCopyInputStream* in, uint64_t& out_val) {
+    out_val = 0;
+    int shift = 0;
+
+    const uint8_t* data;
+    int size;
+    const uint8_t* ptr = nullptr;
+
+    while (shift < 63) {
+        if (ptr == nullptr || ptr >= data + size) {
+            if (!in->Next(&data, &size)) return false;
+            if (size <= 0) continue;
+            ptr = data;
+        }
+
+        uint8_t byte = *ptr++;
+        out_val |= static_cast<uint64_t>(byte & 0x7F) << shift;
+        shift += 7;
+
+        if ((byte & 0x80) == 0) {
+            in->BackUp(static_cast<int>(data + size - ptr));
+            return true;
+        }
+    }
+
+    return false;
 }
 
 
 
-
-
-}
-}
+}} 
