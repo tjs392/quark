@@ -41,11 +41,11 @@ public:
 
     /**
      * Provides a pointer to the next contiguous block of data and its size.
-     * @param data Pointer that will point to the start of the block
+     * @param block Pointer that will point to the start of the block
      * @param size Pointer that will hold the size of the block
      * @return false if end-of-stream or failure
      */
-    virtual bool Next(const uint8_t** data, int* size) = 0;
+    virtual bool Next(const uint8_t** block, int* size) = 0;
 
     /**
      * Pushes back 'count' bytes from the last block returned by Next().
@@ -90,11 +90,11 @@ public:
 
     /**
      * Provides a pointer to a writable block of at least 'size' bytes.
-     * @param data Pointer that will point to the start of the block
+     * @param block Pointer that will point to the start of the block
      * @param size Pointer to the requested block size (may be modified by implementation)
      * @return false if no more space can be provided
      */
-    virtual bool Next(uint8_t** data, int* size) = 0;
+    virtual bool Next(uint8_t** block, int* size) = 0;
 
     /**
      * Backs up 'count' bytes that were returned by the last Next() but not used.
@@ -117,15 +117,15 @@ public:
     bool WriteRaw(const void* src, int size) {
         const uint8_t* ptr = static_cast<const uint8_t*>(src);
         while (size > 0) {
-            uint8_t* out;
+            uint8_t* block;
             int n;
-            if (!Next(&out, &n)) return false;
+            if (!Next(&block, &n)) return false;
             if (n > size) {
-                std::memcpy(out, ptr, size);
+                std::memcpy(block, ptr, size);
                 BackUp(n - size);
                 return true;
             }
-            std::memcpy(out, ptr, n);
+            std::memcpy(block, ptr, n);
             ptr += n;
             size -= n;
         }
@@ -147,7 +147,7 @@ public:
  * @class BufferInputStream
  * @brief Provides zero-copy read access to a single contiguous memory buffer.
  *
- * Useful for deserializing in-memory data without copying.
+ * Useful for deserializing in-memory block without copying.
  */
 class BufferInputStream : public ZeroCopyInputStream {
 public:
@@ -161,13 +161,13 @@ public:
 
     /**
      * @brief Provides a pointer to the next block of contiguous data
-     * @param data Output pointer to the start of the next unread block
+     * @param block Output pointer to the start of the next unread block
      * @param size Output number of bytes in the block
      * @return true if a block is available, false if end of buffer is reached
      */
-    bool Next(const uint8_t** data, int* size) override {
+    bool Next(const uint8_t** block, int* size) override {
         if (pos_ >= size_) return false;
-        *data = data_ + pos_;
+        *block = data_ + pos_;
         int available = size_ - pos_;
         *size = available;
         pos_ += available;
@@ -228,13 +228,13 @@ public:
 
 
     /// Returns the next contiguous block of data and its size
-    /// @param data pointer that will be set to the start of the next block
+    /// @param block pointer that will be set to the start of the next block
     /// @param size pointer that will be set to the size of the block
     /// @return false if no more data is available
-    bool Next(const uint8_t** data, int* size) override {
+    bool Next(const uint8_t** block, int* size) override {
         if (backed_up_ > 0) {
             const auto& c = chunks_[idx_ - 1];
-            *data = c.data + c.size - backed_up_;
+            *block = c.data + c.size - backed_up_;
             *size = backed_up_;
             total_ += *size;
             last_size_ = *size;
@@ -244,7 +244,7 @@ public:
 
         if (idx_ >= static_cast<int>(chunks_.size())) return false;
         const auto& c = chunks_[idx_++];
-        *data = c.data;
+        *block = c.data;
         *size = c.size;
         total_ += *size;
         last_size_ = *size;
@@ -275,6 +275,102 @@ private:
     int last_size_ = 0;         ///< size of last chunk returned
     int64_t total_;             ///< total bytes returned so far
 };
+
+// TODO: Implement MmapInputStream usage and tests
+// Description:
+// This class provides a true zero-copy file input stream using POSIX mmap.
+// It maps an entire file into memory, allowing Next() to return direct pointers
+// into the file without any intermediate copying. This can be very useful for
+// low-latency or high-throughput applications that need to process large files
+// efficiently. 
+//
+// Next steps:
+// - Write unit tests that open a file and read chunks using MmapInputStream.
+// - Handle edge cases such as empty files and small files.
+// - Benchmark against BufferInputStream to see latency improvements.
+// - Ensure compatibility with WSL2 and native Linux.
+
+// ==================
+// Output APIs
+// ===================
+
+/**
+ * @class FixedArrayOutputStream
+ * @brief Zero-copy output stream that writes into a fixed, caller-provided buffer.
+ *
+ * This class allows writing contiguous blocks of data directly into a preallocated
+ * memory buffer without allocating additional memory. It is useful for
+ * low-latency or high-performance applications where memory copies should be minimized.
+ */
+class FixedArrayOutputStream : public ZeroCopyOutputStream {
+public:
+
+    /**
+     * @brief Constructs a FixedArrayOutputStream.
+     * @param data Pointer to the start of the buffer to write into.
+     * @param size Total size of the buffer in bytes.
+     */
+    FixedArrayOutputStream(uint8_t* data, int size) 
+        : data_(data), size_(size), pos_(0), last_provided_(0) {}
+
+    /**
+     * @brief Provides the next writable block in the buffer.
+     * 
+     * Sets `block` to point to the next available memory region in the buffer
+     * and sets `size` to the number of bytes available in that block. Updates
+     * internal bookkeeping to track written bytes.
+     * 
+     * @param block Output pointer to the start of the next writable block.
+     * @param size Output pointer to the size of the writable block.
+     * @return true if a block is available, false if the end of the buffer is reached.
+     */
+    bool Next(uint8_t** block, int* size) override {
+        if (pos_ >= size_) return false;
+        *block = data_ + pos_;
+        int available = size_ - pos_;
+        *size = available;
+        pos_ += available; 
+        last_provided_ = available; 
+        total_ += available;
+        return true;
+    }
+
+    /**
+     * @brief Backs up a number of bytes from the last block returned by Next().
+     * 
+     * This allows the caller to "unclaim" bytes that were returned by Next()
+     * but not actually used. Updates internal bookkeeping accordingly.
+     * 
+     * @param count Number of bytes to back up. Must be <= last block size.
+     * @throws std::runtime_error if count is invalid.
+     */
+    void BackUp(int count) override {
+        if (count < 0 || count > last_provided_) throw std::runtime_error("BackUp out of range");
+        pos_ -= count;
+        last_provided_ -= count;
+        total_ -= count;
+    }
+
+    /**
+     * @brief Returns the total number of bytes written to the buffer so far.
+     * 
+     * Does not include any bytes that were backed up.
+     * 
+     * @return Total number of bytes written.
+     */
+    int64_t ByteCount() const override {
+        return pos_;
+    }
+
+    private:
+    uint8_t* data_;         ///< Pointer to the start of the buffer.
+    int size_;              ///< Total size of the buffer in bytes.
+    int pos_;               ///< Current write position in the buffer.
+    int last_provided_;     ///< Size of the last block returned by Next().
+    int64_t total_;         ///< Total bytes written so far.
+};
+
+
 
 
 
