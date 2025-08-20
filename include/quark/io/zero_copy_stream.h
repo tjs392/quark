@@ -370,6 +370,31 @@ public:
     int64_t total_;         ///< Total bytes written so far.
 };
 
+class VectorOutputStream : ZeroCopyOutputStream {
+public:
+    explicit VectorOutputStream(size_t chunk_hint = 8192)
+        :   chunk_hint_(static_cast<int>(std::max<size_t>(64, chunk_hint))), 
+            size_(0), 
+            last_provided_(0) {
+        buf_.reserve(chunk_hint_);
+    }
+
+    bool Next(uint8_t** block, int* size) override {
+        if (static_cast<int>(buf_.capacity() - buf_.size()) < chunk_hint_) {
+            buf_.reserve(buf_.capacity() + static_cast<size_t>(chunk_hint_));
+        }
+
+        size_t grow = static_cast<size_t>(chunk_hint_)
+    }
+
+private:
+    std::vector<uint8_t> buf_;
+    int chunk_hint_;
+    int size_;
+    int last_provided_;
+    int64_t total_ = 0;
+}
+
 
 
 
