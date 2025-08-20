@@ -302,15 +302,15 @@ private:
  * memory buffer without allocating additional memory. It is useful for
  * low-latency or high-performance applications where memory copies should be minimized.
  */
-class FixedArrayOutputStream : public ZeroCopyOutputStream {
+class BufferOutputStream : public ZeroCopyOutputStream {
 public:
 
     /**
-     * @brief Constructs a FixedArrayOutputStream.
+     * @brief Constructs a BufferOutputStream.
      * @param data Pointer to the start of the buffer to write into.
      * @param size Total size of the buffer in bytes.
      */
-    FixedArrayOutputStream(uint8_t* data, int size) 
+    BufferOutputStream(uint8_t* data, int size) 
         : data_(data), size_(size), pos_(0), last_provided_(0) {}
 
     /**
