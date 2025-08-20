@@ -29,31 +29,25 @@ Each value begins with a **Type Tag** (`uint8_t`), followed by type-specific dat
 ### 3.1 INT32
 [ INT32 | int32_data ]
 
-yaml
-Copy code
-- `INT32` → type tag (`0x01`)  
-- `int32_data` → raw 4-byte little-endian integer  
+- `INT32` -> type tag (`0x01`)  
+- `int32_data` -> raw 4-byte little-endian integer  
 
 ---
 
 ### 3.2 FLOAT32
 [ FLOAT32 | float32_data ]
 
-yaml
-Copy code
-- `FLOAT32` → type tag (`0x02`)  
-- `float32_data` → raw 4-byte little-endian float  
+- `FLOAT32` -> type tag (`0x02`)  
+- `float32_data` -> raw 4-byte little-endian float  
 
 ---
 
 ### 3.3 STRING
 [ STRING | Length | string_data ]
 
-markdown
-Copy code
-- `STRING` → type tag (`0x03`)  
-- `Length` → varint (size of `string_data` in bytes)  
-- `string_data` → UTF-8 encoded string bytes  
+- `STRING` -> type tag (`0x03`)  
+- `Length` -> varint (size of `string_data` in bytes)  
+- `string_data` -> UTF-8 encoded string bytes  
 
 ---
 
@@ -62,8 +56,8 @@ Copy code
 - Unsigned integer stored in a variable number of bytes  
 - Each byte encodes 7 bits  
 - MSB (most significant bit) is the continuation flag:
-  - `1` → more bytes follow  
-  - `0` → last byte  
+  - `1` -> more bytes follow  
+  - `0` -> last byte  
 
 ### Example
 Value: 300
@@ -73,9 +67,6 @@ Varint: [0xAC, 0x02]
 0xAC = 1010 1100 (continuation set, lower 7 bits = 0x2C)
 0x02 = 0000 0010 (no continuation, lower 7 bits = 0x02)
 
-yaml
-Copy code
-
 ---
 
 ## 5. Examples
@@ -83,14 +74,9 @@ Copy code
 ### 5.1 Serialize INT32(42)
 [ 0x01 | 0x2A 0x00 0x00 0x00 ]
 
-scss
-Copy code
-
 ### 5.2 Serialize STRING("hi")
 [ 0x03 | 0x02 | 0x68 0x69 ]
 
-markdown
-Copy code
 - `0x03` = STRING tag  
 - `0x02` = varint length (2 bytes)  
 - `0x68 0x69` = "hi" in UTF-8  
