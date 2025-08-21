@@ -482,8 +482,8 @@ static constexpr int kMaxVarint64Bytes = 10;
  * Varint encoding is a variable-length encoding where:
  * - Each byte uses 7 bits to store data.
  * - The most significant bit (MSB) of each byte is a continuation flag:
- *   - 1 → more bytes follow
- *   - 0 → last byte of the varint
+ *   - 1 -> more bytes follow
+ *   - 0 -> last byte of the varint
  *
  * This encoding is space-efficient for small numbers: values less than 128
  * fit in a single byte.
@@ -511,8 +511,8 @@ inline bool WriteVarint32(ZeroCopyOutputStream* out, uint32_t varint) {
  * Varint encoding is a variable-length encoding where:
  * - Each byte uses 7 bits to store data.
  * - The most significant bit (MSB) of each byte is a continuation flag:
- *   - 1 → more bytes follow
- *   - 0 → last byte of the varint
+ *   - 1 -> more bytes follow
+ *   - 0 -> last byte of the varint
  *
  * This encoding is space-efficient for small numbers: values less than 128
  * fit in a single byte. Larger values may take multiple bytes, up to
