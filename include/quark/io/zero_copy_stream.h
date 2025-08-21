@@ -45,26 +45,26 @@ public:
      * @param size Pointer that will hold the size of the block
      * @return false if end-of-stream or failure
      */
-    virtual bool Next(const uint8_t** block, int* size) = 0;
+    virtual bool Next(const uint8_t** block, size_t* size) = 0;
 
     /**
      * Pushes back 'count' bytes from the last block returned by Next().
      * @param count Number of bytes to back up
      */
-    virtual void BackUp(int count) = 0;
+    virtual void BackUp(size_t count) = 0;
 
     /**
      * Skips forward 'count' bytes by consuming blocks.
      * @param count Number of bytes to skip
      * @return false if not enough bytes remain
      */
-    virtual bool Skip(int64_t count) {
+    virtual bool Skip(size_t count) {
         const uint8_t* ptr;
-        int n;
+        size_t n;
         while (count > 0) {
             if (!Next(&ptr, &n)) return false;
             if (n > count) { 
-                BackUp(n - static_cast<int>(count));
+                BackUp(n - count);
                 count = 0;
                 break;
             }
@@ -94,13 +94,13 @@ public:
      * @param size Pointer to the requested block size (may be modified by implementation)
      * @return false if no more space can be provided
      */
-    virtual bool Next(uint8_t** block, int* size) = 0;
+    virtual bool Next(uint8_t** block, size_t* size) = 0;
 
     /**
      * Backs up 'count' bytes that were returned by the last Next() but not used.
      * @param count Number of bytes to back up
      */
-    virtual void BackUp(int count) = 0;
+    virtual void BackUp(size_t count) = 0;
 
     /**
      * Flushes buffered data to the sink if applicable.
@@ -114,11 +114,11 @@ public:
      * @param size Number of bytes to write
      * @return false if writing failed
      */
-    bool WriteRaw(const void* src, int size) {
+    bool WriteRaw(const void* src, size_t size) {
         const uint8_t* ptr = static_cast<const uint8_t*>(src);
         while (size > 0) {
             uint8_t* block;
-            int n;
+            size_t  n;
             if (!Next(&block, &n)) return false;
             if (n > size) {
                 std::memcpy(block, ptr, size);
@@ -156,7 +156,7 @@ public:
      * @param data Pointer to the start of the buffer to read
      * @param size Total size of the buffer in bytes
      */
-    BufferInputStream(const uint8_t* data, int size)
+    BufferInputStream(const uint8_t* data, size_t size)
         : data_(data), size_(size), pos_(0), last_returned_(0) {}
 
     /**
@@ -165,10 +165,10 @@ public:
      * @param size Output number of bytes in the block
      * @return true if a block is available, false if end of buffer is reached
      */
-    bool Next(const uint8_t** block, int* size) override {
+    bool Next(const uint8_t** block, size_t* size) override {
         if (pos_ >= size_) return false;
         *block = data_ + pos_;
-        int available = size_ - pos_;
+        size_t available = size_ - pos_;
         *size = available;
         pos_ += available;
         last_returned_ = available;
@@ -180,8 +180,8 @@ public:
      * @param count Number of bytes to back up; must be <= size of last block returned
      * @throw std::runtime_error if count is invalid
      */
-    void BackUp(int count) override {
-        if (count < 0 || count > last_returned_)throw std::runtime_error("BackUp out of range");
+    void BackUp(size_t count) override {
+        if (count > last_returned_)throw std::runtime_error("BackUp out of range");
         pos_ -= count;
         last_returned_ -= count;
     }
@@ -195,9 +195,9 @@ public:
 
 private:
     const uint8_t* data_;   // Pointer to the start of the buffer
-    int size_;              // Total size of the buffer
-    int pos_;               // Current read position in the buffer
-    int last_returned_;     // Size of the last block returned by Next()
+    size_t size_;              // Total size of the buffer
+    size_t pos_;               // Current read position in the buffer
+    size_t last_returned_;     // Size of the last block returned by Next()
 };
 
 /// MultiBufferInputStream provides zero-copy access to multiple contiguous
@@ -209,7 +209,7 @@ private:
 /// std::vector<MultiBufferInputStream::Chunk> chunks = { ... };
 /// MultiBufferInputStream stream(chunks);
 /// const uint8_t* data;
-/// int size;
+/// size_t size;
 /// while (stream.Next(&data, &size)) {
 ///     // process 'size' bytes at 'data'
 /// }
@@ -218,7 +218,7 @@ public:
     /// Represents a single contiguous chunk of memory
     struct Chunk {
         const uint8_t* data;    // pointer to the chunk memory
-        int size;               // size of the chunk in bytes
+        size_t size;               // size of the chunk in bytes
     };
 
     /// Constructs the stream from a vector of chunks
@@ -231,7 +231,7 @@ public:
     /// @param block pointer that will be set to the start of the next block
     /// @param size pointer that will be set to the size of the block
     /// @return false if no more data is available
-    bool Next(const uint8_t** block, int* size) override {
+    bool Next(const uint8_t** block, size_t* size) override {
         if (backed_up_ > 0) {
             const auto& c = chunks_[idx_ - 1];
             *block = c.data + c.size - backed_up_;
@@ -242,7 +242,7 @@ public:
             return true;
         }
 
-        if (idx_ >= static_cast<int>(chunks_.size())) return false;
+        if (idx_ >= chunks_.size()) return false;
         const auto& c = chunks_[idx_++];
         *block = c.data;
         *size = c.size;
@@ -253,8 +253,8 @@ public:
 
     /// Backs up a number of bytes from the last block returned by Next()
     /// @param count number of bytes to back up (0 <= count <= last block size)
-    void BackUp(int count) override {
-        if (count < 0 || count > last_size_) throw std::runtime_error("BackUp out of range");
+    void BackUp(size_t count) override {
+        if (count > last_size_) throw std::runtime_error("BackUp out of range");
         total_ -= count;
         backed_up_ = count;
 
@@ -270,9 +270,9 @@ public:
 
 private:
     std::vector<Chunk> chunks_; // underlying memory chunks
-    int idx_;                   // index of next chunk to serve
-    int backed_up_ = 0;         // number of bytes backed up from last chunk
-    int last_size_ = 0;         // size of last chunk returned
+    size_t idx_;                   // index of next chunk to serve
+    size_t backed_up_ = 0;         // number of bytes backed up from last chunk
+    size_t last_size_ = 0;         // size of last chunk returned
     int64_t total_;             // total bytes returned so far
 };
 
@@ -310,7 +310,7 @@ public:
      * @param data Pointer to the start of the buffer to write into.
      * @param size Total size of the buffer in bytes.
      */
-    BufferOutputStream(uint8_t* data, int size) 
+    BufferOutputStream(uint8_t* data, size_t size) 
         : data_(data), size_(size), pos_(0), last_provided_(0) {}
 
     /**
@@ -324,10 +324,10 @@ public:
      * @param size Output pointer to the size of the writable block.
      * @return true if a block is available, false if the end of the buffer is reached.
      */
-    bool Next(uint8_t** block, int* size) override {
+    bool Next(uint8_t** block, size_t* size) override {
         if (pos_ >= size_) return false;
         *block = data_ + pos_;
-        int available = size_ - pos_;
+        size_t available = size_ - pos_;
         *size = available;
         pos_ += available; 
         last_provided_ = available; 
@@ -344,8 +344,8 @@ public:
      * @param count Number of bytes to back up. Must be <= last block size.
      * @throws std::runtime_error if count is invalid.
      */
-    void BackUp(int count) override {
-        if (count < 0 || count > last_provided_) throw std::runtime_error("BackUp out of range");
+    void BackUp(size_t count) override {
+        if (count > last_provided_) throw std::runtime_error("BackUp out of range");
         pos_ -= count;
         last_provided_ -= count;
         total_ -= count;
@@ -364,9 +364,9 @@ public:
 
     private:
     uint8_t* data_;         // Pointer to the start of the buffer.
-    int size_;              // Total size of the buffer in bytes.
-    int pos_;               // Current write position in the buffer.
-    int last_provided_;     // Size of the last block returned by Next().
+    size_t size_;              // Total size of the buffer in bytes.
+    size_t pos_;               // Current write position in the buffer.
+    size_t last_provided_;     // Size of the last block returned by Next().
     int64_t total_;         // Total bytes written so far.
 };
 
@@ -387,7 +387,7 @@ public:
      *                   Default is 8192 bytes, minimum enforced is 64.
      */
     explicit VectorOutputStream(size_t block_size = 8192)
-        :   block_size_(static_cast<int>(std::max<size_t>(64, block_size))), 
+        :   block_size_(std::max<size_t>(64, block_size)), 
             size_(0), 
             last_provided_(0) {
         buf_.reserve(block_size_);
@@ -400,12 +400,12 @@ public:
      * @param size  Size of the writable block in bytes (output).
      * @return true if a block was successfully allocated.
      */
-    bool Next(uint8_t** block, int* size) override {
-        if (static_cast<int>(buf_.capacity() - buf_.size()) < block_size_) {
-            buf_.reserve(buf_.capacity() + static_cast<size_t>(block_size_));
+    bool Next(uint8_t** block, size_t* size) override {
+        if (buf_.capacity() - buf_.size() < block_size_) {
+            buf_.reserve(buf_.capacity() + block_size_);
         }
 
-        size_t grow = static_cast<size_t>(block_size_);
+        size_t grow = block_size_;
         buf_.resize(buf_.size() + grow);
         *block = buf_.data() + size_;
         *size = block_size_;
@@ -420,8 +420,8 @@ public:
      * @param count Number of bytes to back up (must be between 0 and last_provided_).
      * @throws std::runtime_error if count is out of range.
      */
-    void BackUp(int count) override {
-        if (count < 0 || count > last_provided_) throw std::runtime_error("BackUp out of range");
+    void BackUp(size_t count) override {
+        if (count > last_provided_) throw std::runtime_error("BackUp out of range");
         size_ -= count;
         total_ -= count;
         last_provided_ -= count;
@@ -463,9 +463,9 @@ public:
 
 private:
     std::vector<uint8_t> buf_;  // Underlying storage buffer
-    int block_size_;            // Preferred size of each allocated block
-    int size_;                  // Logical size of data written
-    int last_provided_;         // Bytes provided in last Next() call
+    size_t block_size_;            // Preferred size of each allocated block
+    size_t size_;                  // Logical size of data written
+    size_t last_provided_;         // Bytes provided in last Next() call
     int64_t total_ = 0;         // Total bytes ever provided
 };
 
@@ -496,13 +496,15 @@ static constexpr int kMaxVarint64Bytes = 10;
  */
 inline bool WriteVarint32(ZeroCopyOutputStream* out, uint32_t varint) {
     uint8_t tmp[kMaxVarint32Bytes];
-    int n = 0;
+    uint8_t* ptr = tmp;
+
     while (varint >= 0x80) {
-        tmp[n++] = static_cast<uint8_t>(varint | 0x80);
+        *ptr++ = static_cast<uint8_t>(varint | 0x80);
         varint >>= 7;
     }
-    tmp[n++] = static_cast<uint8_t>(varint);
-    return out->WriteRaw(tmp, n);
+    *ptr++ = static_cast<uint8_t>(varint);
+
+    return out->WriteRaw(tmp, ptr - tmp);
 }
 
 /**
@@ -526,13 +528,15 @@ inline bool WriteVarint32(ZeroCopyOutputStream* out, uint32_t varint) {
  */
 inline bool WriteVarint64(ZeroCopyOutputStream* out, uint64_t varint) {
     uint8_t tmp[kMaxVarint64Bytes];
-    int n = 0;
-    while (varint > 0x80) {
-        tmp[n++] = static_cast<uint8_t>(varint | 0x80);
+    uint8_t* ptr = tmp;
+
+    while (varint >= 0x80) {
+        *ptr++ = static_cast<uint8_t>(varint | 0x80);
         varint >>= 7;
     }
-    tmp[n++] = static_cast<uint8_t>(varint);
-    return out->WriteRaw(tmp, n);
+    *ptr++ = static_cast<uint8_t>(varint);
+
+    return out->WriteRaw(tmp, ptr - tmp);
 }
 
 /**
@@ -554,16 +558,16 @@ inline bool WriteVarint64(ZeroCopyOutputStream* out, uint64_t varint) {
  */
 inline bool ReadVarint32(ZeroCopyInputStream* in, uint32_t& out_val) {
     out_val = 0;
-    int shift = 0;
+    size_t shift = 0;
 
     const uint8_t* data;
-    int size;
+    size_t size;
     const uint8_t* ptr = nullptr;
 
     while (shift < 35) {
         if (ptr == nullptr || ptr >= data + size) {
             if (!in->Next(&data, &size)) return false;
-            if (size <= 0) continue;
+            if (size == 0) continue;
             ptr = data;
         }
 
@@ -572,7 +576,7 @@ inline bool ReadVarint32(ZeroCopyInputStream* in, uint32_t& out_val) {
         shift += 7;
 
         if ((byte & 0x80) == 0) {
-            in->BackUp(static_cast<int>(data + size - ptr));
+            in->BackUp(data + size - ptr);
             return true;
         }
     }
@@ -599,16 +603,16 @@ inline bool ReadVarint32(ZeroCopyInputStream* in, uint32_t& out_val) {
  */
 inline bool ReadVarint64(ZeroCopyInputStream* in, uint64_t& out_val) {
     out_val = 0;
-    int shift = 0;
+    size_t shift = 0;
 
     const uint8_t* data;
-    int size;
+    size_t size;
     const uint8_t* ptr = nullptr;
 
-    while (shift < 63) {
+    while (shift < 70) {
         if (ptr == nullptr || ptr >= data + size) {
             if (!in->Next(&data, &size)) return false;
-            if (size <= 0) continue;
+            if (size == 0) continue;
             ptr = data;
         }
 
@@ -617,7 +621,7 @@ inline bool ReadVarint64(ZeroCopyInputStream* in, uint64_t& out_val) {
         shift += 7;
 
         if ((byte & 0x80) == 0) {
-            in->BackUp(static_cast<int>(data + size - ptr));
+            in->BackUp(data + size - ptr);
             return true;
         }
     }
@@ -625,6 +629,168 @@ inline bool ReadVarint64(ZeroCopyInputStream* in, uint64_t& out_val) {
     return false;
 }
 
+/**
+ * @brief Writes a 32-bit unsigned integer in little-endian order to a ZeroCopyOutputStream.
+ *
+ * Each byte of the integer is written in order from least-significant to most-significant.
+ * This ensures cross-platform consistency regardless of host endianness.
+ *
+ * @param out Pointer to the ZeroCopyOutputStream where the data will be written.
+ * @param v The 32-bit unsigned integer value to write.
+ * @return true if the write succeeded, false otherwise.
+ */
+inline bool WriteFixed32(ZeroCopyOutputStream* out, uint32_t v) {
+    uint8_t b[4];
+    b[0] = static_cast<uint8_t>(v); 
+    b[1] = static_cast<uint8_t>(v >> 8);
+    b[2] = static_cast<uint8_t>(v >> 16); 
+    b[3] = static_cast<uint8_t>(v >> 24);
+    return out->WriteRaw(b, 4);
+}
 
+/**
+ * @brief Writes a 64-bit unsigned integer in little-endian order to a ZeroCopyOutputStream.
+ *
+ * Each byte of the integer is written in order from least-significant to most-significant.
+ * This ensures cross-platform consistency regardless of host endianness.
+ *
+ * @param out Pointer to the ZeroCopyOutputStream where the data will be written.
+ * @param v The 64-bit unsigned integer value to write.
+ * @return true if the write succeeded, false otherwise.
+ */
+inline bool WriteFixed64(ZeroCopyOutputStream* out, uint32_t v) {
+    uint8_t b[8];
+    b[0] = static_cast<uint8_t>(v); 
+    b[1] = static_cast<uint8_t>(v >> 8);
+    b[2] = static_cast<uint8_t>(v >> 16); 
+    b[3] = static_cast<uint8_t>(v >> 24);
+    b[4] = static_cast<uint8_t>(v >> 32); 
+    b[5] = static_cast<uint8_t>(v >> 40);
+    b[6] = static_cast<uint8_t>(v >> 48); 
+    b[7] = static_cast<uint8_t>(v >> 56);
+    return out->WriteRaw(b, 8);
+}
 
-}} 
+/**
+ * @brief Reads a 32-bit fixed-size unsigned integer from the input stream.
+ * 
+ * This function reads exactly 4 bytes from the provided ZeroCopyInputStream
+ * and reconstructs a little-endian 32-bit unsigned integer.
+ * 
+ * @param[in,out] in Pointer to the ZeroCopyInputStream to read from.
+ * @param[out] v Reference to a uint32_t where the result will be stored.
+ * 
+ * @return true if 4 bytes were successfully read and decoded.
+ * @return false if there were fewer than 4 bytes available in the stream.
+ */
+inline bool ReadFixed32(ZeroCopyInputStream* in, uint32_t &v) {
+    const uint8_t* ptr;
+    size_t n;
+    if (!in->Next(&ptr, &n) || n < 4) {
+        if (n > 0) {
+            in->BackUp(n);
+        }
+        return false;
+    }
+
+    v = static_cast<uint32_t>(ptr[0]);
+    v |= (static_cast<uint32_t>(ptr[1]) << 8);
+    v |=(static_cast<uint32_t>(ptr[2]) << 16);
+    v |= (static_cast<uint32_t>(ptr[3]) << 24);
+
+    if (n > 4) {
+        in->BackUp(n - 4);
+    }
+    return true;
+}
+
+/**
+ * @brief Reads a 64-bit fixed-size unsigned integer from the input stream.
+ * 
+ * This function reads exactly 8 bytes from the provided ZeroCopyInputStream
+ * and reconstructs a little-endian 64-bit unsigned integer.
+ * 
+ * @param[in,out] in Pointer to the ZeroCopyInputStream to read from.
+ * @param[out] v Reference to a uint64_t where the result will be stored.
+ * 
+ * @return true if 8 bytes were successfully read and decoded.
+ * @return false if there were fewer than 8 bytes available in the stream.
+ */
+inline bool ReadFixed64(ZeroCopyInputStream* in, uint64_t &v) {
+    const uint8_t* ptr;
+    size_t n;
+    if (!in->Next(&ptr, &n) || n < 8) {
+        if (n > 0) {
+            in->BackUp(n);
+        }
+        return false;
+    }
+
+    v = static_cast<uint64_t>(ptr[0]);
+    v |= (static_cast<uint64_t>(ptr[1]) << 8);
+    v |=(static_cast<uint64_t>(ptr[2]) << 16);
+    v |= (static_cast<uint64_t>(ptr[3]) << 24);
+    v |= (static_cast<uint64_t>(ptr[4]) << 32);
+    v |=(static_cast<uint64_t>(ptr[5]) << 40);
+    v |= (static_cast<uint64_t>(ptr[6]) << 48);
+    v |= (static_cast<uint64_t>(ptr[7]) << 56);
+
+    if (n > 8) {
+        in->BackUp(n - 8);
+    }
+    return true;
+}
+
+/**
+ * @brief Writes a length-delimited byte array to the output stream.
+ * 
+ * This function first writes the length of the data as a varint (32-bit), 
+ * then writes the raw bytes themselves. This is useful for writing strings 
+ * or arbitrary binary blobs in a zero-copy, protobuf-style format.
+ * 
+ * @param out Pointer to the ZeroCopyOutputStream to write to.
+ * @param data Pointer to the byte array to write.
+ * @param len Length of the byte array.
+ * @return true if the length and data were successfully written; false otherwise.
+ */
+inline bool WriteLengthDelimitedBytes(ZeroCopyOutputStream* out, const uint8_t* data, size_t len) {
+    if (!WriteVarint32(out, len)) return false;
+    return out->WriteRaw(data, len);
+}
+
+/**
+ * @brief Reads a length-delimited byte array from the input stream.
+ * 
+ * This function first reads a varint-encoded length, then returns a pointer 
+ * directly into the stream buffer for the data. No memory is allocated or copied, 
+ * making this a zero-copy read.
+ * 
+ * @param in Pointer to the ZeroCopyInputStream to read from.
+ * @param data Reference to a pointer that will be set to the start of the byte array.
+ * @param len Reference to a size_t that will be set to the length of the byte array.
+ * @return true if the length and data were successfully read; false otherwise.
+ */
+inline bool ReadLengthDelimitedBytes(ZeroCopyInputStream* in, const uint8_t*& data, size_t&len) {
+    uint32_t length;
+    if (!ReadVarint32(in, length)) {
+        return false;
+    }
+
+    const uint8_t* ptr;
+    size_t n;
+    if (!in->Next(&ptr, &n) || n < length) {
+        if (n > 0) in->BackUp(n);
+        return false;
+    }
+
+    data = ptr;
+    len = length;
+
+    if (n > length) {
+        in->BackUp(n - length);
+    }
+
+    return true;
+}
+
+}}
