@@ -3,7 +3,7 @@
 // Minimal zero-copy-style stream interfaces + practical backends.
 // Inspired by protobuf's ZeroCopy{Input,Output}Stream
 //
-// License: MIT (do as you wish).
+// License: MIT (do as you wish, but please dont use for evil).
 
 #include <cstdint>
 #include <cstddef>
@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <memory>
 #include <limits>
+#include <span>
 
 #if defined(__unix__) || defined(__APPLE__)
     #define QUARK_POSIX 1
@@ -73,6 +74,32 @@ public:
         return true;
     }
 
+    bool ReadRaw(void* buffer, size_t size) {
+        uint8_t* out = static_cast<uint8_t*>(buffer);
+        size_t remaining = size;
+
+        while (remaining > 0) {
+            const uint8_t* ptr;
+            size_t chunk_size;
+
+            if (!Next(&ptr, &chunk_size)) {
+                return false;
+            }
+
+            if (chunk_size > remaining) {
+                std::memcpy(out, ptr, remaining);
+                BackUp(chunk_size - remaining);
+                return true;
+            } else {
+                std::memcpy(out, ptr, chunk_size);
+                out += chunk_size;
+                remaining -= chunk_size;
+            }
+        }
+
+        return true;
+    }
+
     /**
      * Returns the total number of bytes returned to the caller so far.
      * Excludes bytes that were backed up.
@@ -129,6 +156,7 @@ public:
             ptr += n;
             size -= n;
         }
+        return true;
     }
 
     /**
@@ -401,16 +429,18 @@ public:
      * @return true if a block was successfully allocated.
      */
     bool Next(uint8_t** block, size_t* size) override {
-        if (buf_.capacity() - buf_.size() < block_size_) {
-            buf_.reserve(buf_.capacity() + block_size_);
+        if (buf_.size() < size_ + block_size_) {
+            size_t new_capacity = std::max(buf_.capacity() * 2, size_ + block_size_);
+            buf_.reserve(new_capacity);
         }
 
-        size_t grow = block_size_;
-        buf_.resize(buf_.size() + grow);
         *block = buf_.data() + size_;
         *size = block_size_;
+
+        size_ += block_size_;
         last_provided_ = block_size_;
         total_ += block_size_;
+
         return true;
     }
 
@@ -658,7 +688,7 @@ inline bool WriteFixed32(ZeroCopyOutputStream* out, uint32_t v) {
  * @param v The 64-bit unsigned integer value to write.
  * @return true if the write succeeded, false otherwise.
  */
-inline bool WriteFixed64(ZeroCopyOutputStream* out, uint32_t v) {
+inline bool WriteFixed64(ZeroCopyOutputStream* out, uint64_t v) {
     uint8_t b[8];
     b[0] = static_cast<uint8_t>(v); 
     b[1] = static_cast<uint8_t>(v >> 8);
@@ -759,38 +789,154 @@ inline bool WriteLengthDelimitedBytes(ZeroCopyOutputStream* out, const uint8_t* 
 }
 
 /**
- * @brief Reads a length-delimited byte array from the input stream.
- * 
- * This function first reads a varint-encoded length, then returns a pointer 
- * directly into the stream buffer for the data. No memory is allocated or copied, 
- * making this a zero-copy read.
- * 
- * @param in Pointer to the ZeroCopyInputStream to read from.
- * @param data Reference to a pointer that will be set to the start of the byte array.
- * @param len Reference to a size_t that will be set to the length of the byte array.
- * @return true if the length and data were successfully read; false otherwise.
+ * @brief Reads a length-delimited byte sequence from the input stream.
+ * @param in The input stream to read from.
+ * @param out Span that will point to the read bytes.
+ * @param persistent_buffer Optional buffer to hold data if not contiguous.
+ * @return true on success, false on failure.
  */
-inline bool ReadLengthDelimitedBytes(ZeroCopyInputStream* in, const uint8_t*& data, size_t&len) {
+inline bool ReadLengthDelimitedBytes(ZeroCopyInputStream* in,  std::span<const uint8_t>& out, std::shared_ptr<std::vector<uint8_t>>& persistent_buffer) {
     uint32_t length;
-    if (!ReadVarint32(in, length)) {
-        return false;
-    }
+    if (!ReadVarint32(in, length)) return false;
 
     const uint8_t* ptr;
     size_t n;
-    if (!in->Next(&ptr, &n) || n < length) {
-        if (n > 0) in->BackUp(n);
+    if (!in->Next(&ptr, &n)) return false;
+
+    if (n >= length) {
+        out = std::span<const uint8_t>(ptr, length);
+        in->BackUp(n - length);
+        persistent_buffer.reset();
+        return true;
+    }
+
+    persistent_buffer = std::make_shared<std::vector<uint8_t>>(length);
+    if (!in->ReadRaw(persistent_buffer->data(), length)) return false;
+
+    out = std::span<const uint8_t>(persistent_buffer->data(), length);
+    return true;
+}
+
+// ===========================
+// Serialization Apis
+// ===========================
+
+/**
+ * @brief Enumeration of supported serialization types.
+ */
+enum class Type : uint8_t { 
+    INT32 = 1, 
+    FLOAT32 = 2, 
+    STRING = 3
+};
+
+/**
+ * @brief Serializes a 32-bit integer to the output stream.
+ * @param out The output stream to write to.
+ * @param value The integer value to serialize.
+ * @return true on success, false on failure.
+ */
+inline bool SerializeInt32(ZeroCopyOutputStream* out, int32_t value) {
+    uint8_t tag = static_cast<uint8_t>(Type::INT32);
+    
+    if (!out->WriteRaw(&tag, 1)) return false;
+    return WriteFixed32(out, static_cast<uint32_t>(value));
+}
+
+/**
+ * @brief Deserializes a 32-bit integer from the input stream.
+ * @param in The input stream to read from.
+ * @param value The integer variable to store the deserialized value.
+ * @return true on success, false on failure.
+ */
+inline bool DeserializeInt32(ZeroCopyInputStream* in, int32_t& value) {
+    uint8_t tag;
+    if (!in->ReadRaw(&tag, 1)) return false;
+    if (tag != static_cast<uint8_t>(Type::INT32)) return false;
+
+    uint32_t tmp;
+    if (!ReadFixed32(in, tmp)) return false;
+    value = static_cast<int32_t>(tmp);
+    return true;
+}
+
+/**
+ * @brief Serializes a 32-bit float to the output stream.
+ * @param out The output stream to write to.
+ * @param value The float value to serialize.
+ * @return true on success, false on failure.
+ */
+inline bool SerializeFloat32(ZeroCopyOutputStream* out, float value) {
+    uint8_t tag = static_cast<uint8_t>(Type::FLOAT32);
+    if (!out->WriteRaw(&tag, 1)) return false;
+
+    uint32_t bits;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return WriteFixed32(out, bits);
+}
+
+/**
+ * @brief Deserializes a 32-bit float from the input stream.
+ * @param in The input stream to read from.
+ * @param value The float variable to store the deserialized value.
+ * @return true on success, false on failure.
+ */
+inline bool DeserializeFloat32(ZeroCopyInputStream* in, float& value) {
+    uint8_t tag;
+    if (!in->ReadRaw(&tag, 1)) return false;
+    if (tag != static_cast<uint8_t>(Type::FLOAT32)) return false;
+
+    uint32_t bits;
+    if (!ReadFixed32(in, bits)) return false;
+
+    std::memcpy(&value, &bits, sizeof(value));
+    return true;
+}
+
+/**
+ * @brief Serializes a string to the output stream.
+ * @param out The output stream to write to.
+ * @param str The string to serialize.
+ * @return true on success, false on failure.
+ */
+inline bool SerializeString(ZeroCopyOutputStream* out, const std::string& str) {
+    uint8_t tag = static_cast<uint8_t>(Type::STRING);
+    if (!out->WriteRaw(&tag, 1)) return false;
+
+    if (!WriteVarint32(out, static_cast<uint32_t>(str.size()))) return false;
+
+    return out->WriteRaw(reinterpret_cast<const uint8_t*>(str.data()), str.size());
+}
+
+/**
+ * @brief Deserializes a string from the input stream.
+ * @param in The input stream to read from.
+ * @param str The string to store the deserialized data (if copy is needed).
+ * @param persistent_buffer Optional buffer to hold data if not contiguous.
+ * @param str_view String view pointing to the deserialized data.
+ * @return true on success, false on failure.
+ */
+inline bool DeserializeString(
+    ZeroCopyInputStream* in,
+    std::string& str,
+    std::shared_ptr<std::vector<uint8_t>>& persistent_buffer,
+    std::string_view& str_view)
+{
+    std::span<const uint8_t> bytes;
+
+    if (!ReadLengthDelimitedBytes(in, bytes, persistent_buffer)) {
         return false;
     }
 
-    data = ptr;
-    len = length;
-
-    if (n > length) {
-        in->BackUp(n - length);
+    if (persistent_buffer) {
+        str.assign(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+        str_view = str;
+    } else {
+        str_view = std::string_view(reinterpret_cast<const char*>(bytes.data()), bytes.size());
     }
 
     return true;
 }
+
 
 }}

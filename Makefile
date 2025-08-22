@@ -1,5 +1,5 @@
 CXX = g++
-CXXFLAGS = -std=c++17 -Iinclude -Iproto_gen -Wall -Wextra
+CXXFLAGS = -std=c++20 -Iinclude -Iproto_gen -Wall -Wextra
 LDFLAGS = -lprotobuf
 
 TEST_SRC = tests/test.cpp proto_gen/message.pb.cc
