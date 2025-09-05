@@ -2,8 +2,6 @@
 // quark_zero_copy_stream.h
 // Minimal zero-copy-style stream interfaces + practical backends.
 // Inspired by protobuf's ZeroCopy{Input,Output}Stream
-//
-// License: MIT (do as you wish, but please dont use for evil).
 
 #include <cstdint>
 #include <cstddef>
@@ -77,23 +75,29 @@ public:
     bool ReadRaw(void* buffer, size_t size) {
         uint8_t* out = static_cast<uint8_t*>(buffer);
         size_t remaining = size;
+        size_t bytes_read = 0;
 
         while (remaining > 0) {
             const uint8_t* ptr;
             size_t chunk_size;
 
             if (!Next(&ptr, &chunk_size)) {
+                if (bytes_read > 0) {
+                    BackUp(chunk_size);
+                }
                 return false;
             }
 
             if (chunk_size > remaining) {
                 std::memcpy(out, ptr, remaining);
                 BackUp(chunk_size - remaining);
+                bytes_read += remaining;
                 return true;
             } else {
                 std::memcpy(out, ptr, chunk_size);
                 out += chunk_size;
                 remaining -= chunk_size;
+                bytes_read += chunk_size;
             }
         }
 
@@ -209,7 +213,7 @@ public:
      * @throw std::runtime_error if count is invalid
      */
     void BackUp(size_t count) override {
-        if (count > last_returned_)throw std::runtime_error("BackUp out of range");
+        if (count > last_returned_) throw std::runtime_error("BackUp out of range");
         pos_ -= count;
         last_returned_ -= count;
     }
@@ -252,7 +256,7 @@ public:
     /// Constructs the stream from a vector of chunks
     /// @param chunks a vector of memory chunks to read from
     explicit MultiBufferInputStream(std::vector<Chunk> chunks)
-        : chunks_(std::move(chunks)), idx_(0), backed_up_(0), total_(0) {}
+        : chunks_(std::move(chunks)), idx_(0), backed_up_(0), last_size_(0), total_(0) {}
 
 
     /// Returns the next contiguous block of data and its size
@@ -286,9 +290,7 @@ public:
         total_ -= count;
         backed_up_ = count;
 
-        if (backed_up_ == last_size_) {
-            if (idx_ > 0) idx_--;
-        }
+        if (backed_up_ == last_size_ && idx_ > 0) idx_--;
         last_size_ -= count;
     }
 
@@ -339,7 +341,7 @@ public:
      * @param size Total size of the buffer in bytes.
      */
     BufferOutputStream(uint8_t* data, size_t size) 
-        : data_(data), size_(size), pos_(0), last_provided_(0) {}
+        : data_(data), size_(size), pos_(0), last_provided_(0), total_(0) {}
 
     /**
      * @brief Provides the next writable block in the buffer.
@@ -406,7 +408,7 @@ public:
  * underlying memory without intermediate buffers or extra copies. This makes it
  * useful for serialization frameworks that expect ZeroCopyOutputStream.
  */
-class VectorOutputStream : ZeroCopyOutputStream {
+class VectorOutputStream : public ZeroCopyOutputStream {
 public:
     /**
      * @brief Construct a new VectorOutputStream.
@@ -417,8 +419,9 @@ public:
     explicit VectorOutputStream(size_t block_size = 8192)
         :   block_size_(std::max<size_t>(64, block_size)), 
             size_(0), 
-            last_provided_(0) {
-        buf_.reserve(block_size_);
+            last_provided_(0), 
+            total_(0) { 
+        buf_.reserve(block_size_); 
     }
 
     /**
@@ -430,8 +433,7 @@ public:
      */
     bool Next(uint8_t** block, size_t* size) override {
         if (buf_.size() < size_ + block_size_) {
-            size_t new_capacity = std::max(buf_.capacity() * 2, size_ + block_size_);
-            buf_.reserve(new_capacity);
+            buf_.resize(size_ + block_size_);
         }
 
         *block = buf_.data() + size_;
@@ -590,8 +592,8 @@ inline bool ReadVarint32(ZeroCopyInputStream* in, uint32_t& out_val) {
     out_val = 0;
     size_t shift = 0;
 
-    const uint8_t* data;
-    size_t size;
+    const uint8_t* data = nullptr;
+    size_t size = 0;
     const uint8_t* ptr = nullptr;
 
     while (shift < 35) {
@@ -635,8 +637,8 @@ inline bool ReadVarint64(ZeroCopyInputStream* in, uint64_t& out_val) {
     out_val = 0;
     size_t shift = 0;
 
-    const uint8_t* data;
-    size_t size;
+    const uint8_t* data = nullptr;
+    size_t size = 0;
     const uint8_t* ptr = nullptr;
 
     while (shift < 70) {
